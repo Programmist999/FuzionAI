@@ -88,8 +88,8 @@ async function createTables() {
   }
 }
 
-// Конфигурация email
-const transporter = nodemailer.createTransporter({
+// Конфигурация email (ИСПРАВЛЕННАЯ СТРОКА)
+const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
     user: process.env.EMAIL_USER,
@@ -158,7 +158,7 @@ app.post('/auth/send-code', async (req, res) => {
     );
 
     // Отправляем email с кодом (в демо-режиме просто возвращаем код)
-    if (process.env.NODE_ENV === 'production' && process.env.EMAIL_USER) {
+    if (process.env.EMAIL_USER && process.env.EMAIL_PASS) {
       const mailOptions = {
         from: process.env.EMAIL_USER,
         to: email,
@@ -197,7 +197,7 @@ app.post('/auth/verify', async (req, res) => {
     const { email, code } = req.body;
 
     // В демо-режиме пропускаем проверку кода
-    if (process.env.NODE_ENV !== 'production') {
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
       const tempUser = await pool.query(
         'SELECT * FROM temp_registrations WHERE email = $1',
         [email]

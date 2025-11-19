@@ -4,6 +4,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const { Pool } = require('pg');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -12,6 +13,9 @@ const PORT = process.env.PORT || 3000;
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+// 📍 ОБСЛУЖИВАНИЕ СТАТИЧЕСКИХ ФАЙЛОВ - ДОБАВЛЕНО!
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Проверка DATABASE_URL
 if (!process.env.DATABASE_URL) {
@@ -159,6 +163,17 @@ const checkDatabase = (req, res, next) => {
   next();
 };
 
+// 📍 КОРНЕВОЙ ПУТЬ - отдаем HTML файл
+app.get('/', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// 📍 ВСЕ ДРУГИЕ ПУТИ - отдаем HTML файл (для SPA)
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+
+// ... остальные API эндпоинты остаются без изменений ...
 // 1. Отправка кода подтверждения
 app.post('/auth/send-code', checkDatabase, async (req, res) => {
   try {
@@ -473,4 +488,5 @@ app.listen(PORT, async () => {
   }
   
   console.log(`📧 Email режим: ${process.env.EMAIL_USER ? 'ВКЛ' : 'ВЫКЛ (демо)'}`);
+  console.log(`🌐 Фронтенд доступен по адресу: http://localhost:${PORT}`);
 });

@@ -960,12 +960,23 @@
             try {
                 // Здесь будет запрос к вашему серверу для отправки кода
                 const response = await fetch(`${API_BASE_URL}/auth/send-code`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ name, email, password })
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({ name, email, password })
                 });
+
+                const data = await response.json();
+
+                if (data.success) {
+                  // Код в data.demo_code
+                  console.log('Ваш код:', data.demo_code);
+                  showStep(2);
+                  
+                  // Автоматически вставить код в поле для удобства
+                  document.getElementById('codeInput').value = data.demo_code;
+                }
                 
                 if (response.ok) {
                     showStep(2);
@@ -1422,4 +1433,5 @@
     </script>
 </body>
 </html>
+
 

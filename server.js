@@ -13,14 +13,40 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Подключение к PostgreSQL
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
-});
+// Проверка DATABASE_URL
+if (!process.env.DATABASE_URL) {
+  console.error('❌ DATABASE_URL не установлен!');
+  console.log('Добавьте DATABASE_URL в Environment Variables в Render.com');
+}
+
+// Подключение к PostgreSQL с обработкой ошибок
+let pool;
+try {
+  pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+  });
+  
+  // Тестируем подключение
+  pool.query('SELECT NOW()', (err) => {
+    if (err) {
+      console.error('❌ Ошибка подключения к базе:', err.message);
+    } else {
+      console.log('✅ Подключение к базе данных установлено');
+    }
+  });
+} catch (error) {
+  console.error('❌ Ошибка создания пула подключений:', error.message);
+  pool = null;
+}
 
 // Функция для создания таблиц
 async function createTables() {
+  if (!pool) {
+    console.error('❌ Пул подключений не инициализирован');
+    return;
+  }
+
   try {
     console.log('🔄 Проверка и создание таблиц...');
 
@@ -34,6 +60,7 @@ async function createTables() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    console.log('✅ Таблица users создана/проверена');
 
     // Таблица временных регистраций
     await pool.query(`
@@ -47,6 +74,7 @@ async function createTables() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    console.log('✅ Таблица temp_registrations создана/проверена');
 
     // Таблица чатов
     await pool.query(`
@@ -58,6 +86,7 @@ async function createTables() {
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    console.log('✅ Таблица chats создана/проверена');
 
     // Таблица сообщений
     await pool.query(`
@@ -69,6 +98,7 @@ async function createTables() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    console.log('✅ Таблица messages создана/проверена');
 
     // Создание индексов
     await pool.query(`
@@ -80,15 +110,16 @@ async function createTables() {
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_temp_registrations_email ON temp_registrations(email)
     `);
+    console.log('✅ Индексы созданы/проверены');
 
     console.log('✅ Все таблицы созданы/проверены успешно!');
     
   } catch (error) {
-    console.error('❌ Ошибка при создании таблиц:', error);
+    console.error('❌ Ошибка при создании таблиц:', error.message);
   }
 }
 
-// Конфигурация email (ИСПРАВЛЕННАЯ СТРОКА)
+// Конфигурация email
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
@@ -120,8 +151,16 @@ function generateVerificationCode() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
+// Проверка доступности базы данных
+const checkDatabase = (req, res, next) => {
+  if (!pool) {
+    return res.status(503).json({ error: 'База данных недоступна' });
+  }
+  next();
+};
+
 // 1. Отправка кода подтверждения
-app.post('/auth/send-code', async (req, res) => {
+app.post('/auth/send-code', checkDatabase, async (req, res) => {
   try {
     const { name, email, password } = req.body;
 
@@ -192,7 +231,7 @@ app.post('/auth/send-code', async (req, res) => {
 });
 
 // 2. Подтверждение кода и регистрация
-app.post('/auth/verify', async (req, res) => {
+app.post('/auth/verify', checkDatabase, async (req, res) => {
   try {
     const { email, code } = req.body;
 
@@ -283,7 +322,7 @@ app.post('/auth/verify', async (req, res) => {
 });
 
 // 3. Получение чатов пользователя
-app.get('/chats', authenticateToken, async (req, res) => {
+app.get('/chats', authenticateToken, checkDatabase, async (req, res) => {
   try {
     const chats = await pool.query(
       `SELECT id, title, created_at, updated_at 
@@ -301,7 +340,7 @@ app.get('/chats', authenticateToken, async (req, res) => {
 });
 
 // 4. Создание нового чата
-app.post('/chats', authenticateToken, async (req, res) => {
+app.post('/chats', authenticateToken, checkDatabase, async (req, res) => {
   try {
     const { title = 'Новый чат' } = req.body;
 
@@ -320,7 +359,7 @@ app.post('/chats', authenticateToken, async (req, res) => {
 });
 
 // 5. Сохранение сообщений чата
-app.post('/chats/:chatId/messages', authenticateToken, async (req, res) => {
+app.post('/chats/:chatId/messages', authenticateToken, checkDatabase, async (req, res) => {
   try {
     const { chatId } = req.params;
     const { messages } = req.body;
@@ -360,7 +399,7 @@ app.post('/chats/:chatId/messages', authenticateToken, async (req, res) => {
 });
 
 // 6. Получение сообщений чата
-app.get('/chats/:chatId/messages', authenticateToken, async (req, res) => {
+app.get('/chats/:chatId/messages', authenticateToken, checkDatabase, async (req, res) => {
   try {
     const { chatId } = req.params;
 
@@ -380,7 +419,7 @@ app.get('/chats/:chatId/messages', authenticateToken, async (req, res) => {
 });
 
 // 7. Удаление чата
-app.delete('/chats/:chatId', authenticateToken, async (req, res) => {
+app.delete('/chats/:chatId', authenticateToken, checkDatabase, async (req, res) => {
   try {
     const { chatId } = req.params;
 
@@ -398,8 +437,16 @@ app.delete('/chats/:chatId', authenticateToken, async (req, res) => {
 
 // Тестовый эндпоинт для проверки базы
 app.get('/health', async (req, res) => {
+  if (!pool) {
+    return res.status(503).json({ 
+      status: 'ERROR', 
+      database: 'disconnected',
+      error: 'DATABASE_URL не настроен' 
+    });
+  }
+
   try {
-    await pool.query('SELECT 1');
+    await pool.query('SELECT NOW()');
     res.json({ 
       status: 'OK', 
       database: 'connected',
@@ -418,9 +465,12 @@ app.get('/health', async (req, res) => {
 app.listen(PORT, async () => {
   console.log(`🚀 Сервер запущен на порту ${PORT}`);
   
-  // Создаем таблицы при запуске
-  await createTables();
+  if (pool) {
+    // Создаем таблицы при запуске
+    await createTables();
+  } else {
+    console.log('❌ База данных недоступна. Проверьте DATABASE_URL');
+  }
   
-  console.log(`✅ Сервер готов к работе!`);
   console.log(`📧 Email режим: ${process.env.EMAIL_USER ? 'ВКЛ' : 'ВЫКЛ (демо)'}`);
 });

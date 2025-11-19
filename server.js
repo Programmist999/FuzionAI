@@ -13,13 +13,82 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// Подключение к PostgreSQL (ваша база на Render.com)
+// Подключение к PostgreSQL
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://username:password@host:port/database',
+  connectionString: process.env.DATABASE_URL,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
 });
 
-// Конфигурация email (используем Gmail)
+// Функция для создания таблиц
+async function createTables() {
+  try {
+    console.log('🔄 Проверка и создание таблиц...');
+
+    // Таблица пользователей
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Таблица временных регистраций
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS temp_registrations (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        email VARCHAR(255) UNIQUE NOT NULL,
+        password VARCHAR(255) NOT NULL,
+        verification_code VARCHAR(6) NOT NULL,
+        code_expires TIMESTAMP NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Таблица чатов
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS chats (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        title VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Таблица сообщений
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS messages (
+        id SERIAL PRIMARY KEY,
+        chat_id INTEGER REFERENCES chats(id) ON DELETE CASCADE,
+        role VARCHAR(20) NOT NULL,
+        content TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Создание индексов
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_chats_user_id ON chats(user_id)
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id)
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_temp_registrations_email ON temp_registrations(email)
+    `);
+
+    console.log('✅ Все таблицы созданы/проверены успешно!');
+    
+  } catch (error) {
+    console.error('❌ Ошибка при создании таблиц:', error);
+  }
+}
+
+// Конфигурация email
 const transporter = nodemailer.createTransporter({
   service: 'gmail',
   auth: {
@@ -88,26 +157,34 @@ app.post('/auth/send-code', async (req, res) => {
       [name, email, await bcrypt.hash(password, 10), verificationCode, codeExpires]
     );
 
-    // Отправляем email с кодом
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: email,
-      subject: 'Код подтверждения для Gemini Chat',
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #4a1e6d;">Добро пожаловать в Gemini Chat!</h2>
-          <p>Ваш код подтверждения: <strong style="font-size: 24px; color: #4a1e6d;">${verificationCode}</strong></p>
-          <p>Код действителен в течение 10 минут.</p>
-          <p>Если вы не регистрировались в Gemini Chat, просто проигнорируйте это письмо.</p>
-          <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
-          <p style="color: #666; font-size: 12px;">С уважением,<br>Команда Gemini Chat</p>
-        </div>
-      `
-    };
+    // Отправляем email с кодом (в демо-режиме просто возвращаем код)
+    if (process.env.NODE_ENV === 'production' && process.env.EMAIL_USER) {
+      const mailOptions = {
+        from: process.env.EMAIL_USER,
+        to: email,
+        subject: 'Код подтверждения для Gemini Chat',
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+            <h2 style="color: #4a1e6d;">Добро пожаловать в Gemini Chat!</h2>
+            <p>Ваш код подтверждения: <strong style="font-size: 24px; color: #4a1e6d;">${verificationCode}</strong></p>
+            <p>Код действителен в течение 10 минут.</p>
+            <p>Если вы не регистрировались в Gemini Chat, просто проигнорируйте это письмо.</p>
+            <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+            <p style="color: #666; font-size: 12px;">С уважением,<br>Команда Gemini Chat</p>
+          </div>
+        `
+      };
 
-    await transporter.sendMail(mailOptions);
+      await transporter.sendMail(mailOptions);
+      res.json({ message: 'Код подтверждения отправлен на вашу почту' });
+    } else {
+      // Демо-режим - возвращаем код в ответе
+      res.json({ 
+        message: 'Код подтверждения (демо-режим)',
+        demo_code: verificationCode 
+      });
+    }
 
-    res.json({ message: 'Код подтверждения отправлен на вашу почту' });
   } catch (error) {
     console.error('Ошибка отправки кода:', error);
     res.status(500).json({ error: 'Ошибка сервера при отправке кода' });
@@ -119,7 +196,48 @@ app.post('/auth/verify', async (req, res) => {
   try {
     const { email, code } = req.body;
 
-    // Находим временную запись
+    // В демо-режиме пропускаем проверку кода
+    if (process.env.NODE_ENV !== 'production') {
+      const tempUser = await pool.query(
+        'SELECT * FROM temp_registrations WHERE email = $1',
+        [email]
+      );
+
+      if (tempUser.rows.length === 0) {
+        return res.status(400).json({ error: 'Пользователь не найден' });
+      }
+
+      const userData = tempUser.rows[0];
+
+      // Создаем пользователя
+      const newUser = await pool.query(
+        `INSERT INTO users (name, email, password) 
+         VALUES ($1, $2, $3) 
+         RETURNING id, name, email, created_at`,
+        [userData.name, userData.email, userData.password]
+      );
+
+      // Удаляем временную запись
+      await pool.query('DELETE FROM temp_registrations WHERE email = $1', [email]);
+
+      // Генерируем JWT токен
+      const token = jwt.sign(
+        { userId: newUser.rows[0].id, email: newUser.rows[0].email },
+        process.env.JWT_SECRET || 'your-secret-key',
+        { expiresIn: '30d' }
+      );
+
+      return res.json({
+        token,
+        user: {
+          id: newUser.rows[0].id,
+          name: newUser.rows[0].name,
+          email: newUser.rows[0].email
+        }
+      });
+    }
+
+    // Продакшен-режим с проверкой кода
     const tempUser = await pool.query(
       `SELECT * FROM temp_registrations 
        WHERE email = $1 AND verification_code = $2 AND code_expires > NOW()`,
@@ -278,7 +396,31 @@ app.delete('/chats/:chatId', authenticateToken, async (req, res) => {
   }
 });
 
+// Тестовый эндпоинт для проверки базы
+app.get('/health', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ 
+      status: 'OK', 
+      database: 'connected',
+      tables_created: true 
+    });
+  } catch (error) {
+    res.status(500).json({ 
+      status: 'ERROR', 
+      database: 'disconnected',
+      error: error.message 
+    });
+  }
+});
+
 // Запуск сервера
-app.listen(PORT, () => {
-  console.log(`Сервер запущен на порту ${PORT}`);
+app.listen(PORT, async () => {
+  console.log(`🚀 Сервер запущен на порту ${PORT}`);
+  
+  // Создаем таблицы при запуске
+  await createTables();
+  
+  console.log(`✅ Сервер готов к работе!`);
+  console.log(`📧 Email режим: ${process.env.EMAIL_USER ? 'ВКЛ' : 'ВЫКЛ (демо)'}`);
 });
